@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Script pour récupérer les données réelles d'un panel Grafana via l'API /api/ds/query
-Utilise un certificat .pem pour l'authentification TLS
+Utilise un certificat .pem pour vérifier le serveur SSL
 """
 
 import requests
@@ -10,30 +10,11 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Any, Optional, Tuple
 
 
-def load_certificate(cert_path: str) -> str:
-    """
-    Charge le certificat .pem depuis un fichier
-    
-    Args:
-        cert_path: Chemin vers le fichier .pem
-        
-    Returns:
-        Chemin du certificat (pour requests)
-    """
-    try:
-        with open(cert_path, 'r') as f:
-            f.read()  # Vérifier que le fichier est lisible
-        return cert_path
-    except Exception as e:
-        raise Exception(f"Erreur lors du chargement du certificat: {e}")
-
-
 def get_dashboard_config(
     grafana_url: str,
     dashboard_uid: str,
     api_token: str,
-    cert_path: str,
-    verify_ssl: bool = True
+    cert_path: str
 ) -> Dict[str, Any]:
     """
     Récupère la configuration complète d'un dashboard Grafana
@@ -42,8 +23,7 @@ def get_dashboard_config(
         grafana_url: URL de base de Grafana (ex: https://grafana.example.com)
         dashboard_uid: UID du dashboard
         api_token: Token API Grafana
-        cert_path: Chemin vers le certificat .pem
-        verify_ssl: Vérifier le certificat SSL (True par défaut)
+        cert_path: Chemin vers le certificat .pem pour vérification SSL
         
     Returns:
         Dictionnaire contenant la configuration du dashboard
@@ -51,70 +31,55 @@ def get_dashboard_config(
     url = f"{grafana_url}/api/dashboards/uid/{dashboard_uid}"
     
     headers = {
-        "Authorization": f"Bearer {api_token}",
-        "Content-Type": "application/json"
+        'Authorization': f'Bearer {api_token}'
     }
     
     try:
-        response = requests.get(
-            url,
-            headers=headers,
-            cert=cert_path,
-            verify=verify_ssl
-        )
+        response = requests.get(url, headers=headers, verify=cert_path)
         response.raise_for_status()
         return response.json()
     except requests.exceptions.RequestException as e:
         raise Exception(f"Erreur lors de la récupération du dashboard: {e}")
 
 
-def find_panel_by_id(dashboard_config: Dict[str, Any], panel_id: int) -> Optional[Dict[str, Any]]:
+def get_panel_from_dashboard(
+    grafana_url: str,
+    dashboard_uid: str,
+    api_token: str,
+    cert_path: str,
+    panel_id: Optional[int] = None,
+    panel_title: Optional[str] = None
+) -> Optional[Dict[str, Any]]:
     """
-    Trouve un panel spécifique dans la configuration du dashboard par son ID
+    Récupère un panel spécifique d'un dashboard par son ID ou son titre
     
     Args:
-        dashboard_config: Configuration du dashboard
-        panel_id: ID du panel recherché
+        grafana_url: URL de base de Grafana
+        dashboard_uid: UID du dashboard
+        api_token: Token API Grafana
+        cert_path: Chemin vers le certificat .pem
+        panel_id: ID du panel recherché (optionnel)
+        panel_title: Titre du panel recherché (optionnel)
         
     Returns:
         Configuration du panel ou None si non trouvé
     """
-    panels = dashboard_config.get("dashboard", {}).get("panels", [])
+    if panel_id is None and panel_title is None:
+        raise ValueError("Vous devez fournir soit panel_id soit panel_title")
+    
+    dashboard_json = get_dashboard_config(grafana_url, dashboard_uid, api_token, cert_path)
+    panels = dashboard_json['dashboard']['panels']
     
     for panel in panels:
-        if panel.get("id") == panel_id:
+        if (panel_id is not None and panel['id'] == panel_id) or \
+           (panel_title is not None and panel['title'] == panel_title):
             return panel
         
         # Vérifier les sous-panels (pour les rows/groupes)
-        if "panels" in panel:
-            for sub_panel in panel["panels"]:
-                if sub_panel.get("id") == panel_id:
-                    return sub_panel
-    
-    return None
-
-
-def find_panel_by_title(dashboard_config: Dict[str, Any], panel_title: str) -> Optional[Dict[str, Any]]:
-    """
-    Trouve un panel spécifique dans la configuration du dashboard par son titre
-    
-    Args:
-        dashboard_config: Configuration du dashboard
-        panel_title: Titre du panel recherché
-        
-    Returns:
-        Configuration du panel ou None si non trouvé
-    """
-    panels = dashboard_config.get("dashboard", {}).get("panels", [])
-    
-    for panel in panels:
-        if panel.get("title") == panel_title:
-            return panel
-        
-        # Vérifier les sous-panels
-        if "panels" in panel:
-            for sub_panel in panel["panels"]:
-                if sub_panel.get("title") == panel_title:
+        if 'panels' in panel:
+            for sub_panel in panel['panels']:
+                if (panel_id is not None and sub_panel['id'] == panel_id) or \
+                   (panel_title is not None and sub_panel['title'] == panel_title):
                     return sub_panel
     
     return None
@@ -214,8 +179,7 @@ def execute_panel_query(
     grafana_url: str,
     payload: Dict[str, Any],
     api_token: str,
-    cert_path: str,
-    verify_ssl: bool = True
+    cert_path: str
 ) -> Dict[str, Any]:
     """
     Exécute la requête via l'API /api/ds/query
@@ -225,7 +189,6 @@ def execute_panel_query(
         payload: Payload construit avec build_query_payload
         api_token: Token API Grafana
         cert_path: Chemin vers le certificat .pem
-        verify_ssl: Vérifier le certificat SSL
         
     Returns:
         Résultats de la requête
@@ -233,18 +196,12 @@ def execute_panel_query(
     url = f"{grafana_url}/api/ds/query"
     
     headers = {
-        "Authorization": f"Bearer {api_token}",
-        "Content-Type": "application/json"
+        'Authorization': f'Bearer {api_token}',
+        'Content-Type': 'application/json'
     }
     
     try:
-        response = requests.post(
-            url,
-            headers=headers,
-            json=payload,
-            cert=cert_path,
-            verify=verify_ssl
-        )
+        response = requests.post(url, headers=headers, json=payload, verify=cert_path)
         response.raise_for_status()
         return response.json()
     except requests.exceptions.RequestException as e:
@@ -357,93 +314,109 @@ def format_results_readable(parsed_results: List[Dict[str, Any]]) -> str:
     return "\n".join(output)
 
 
+def get_panel_data(
+    grafana_url: str,
+    dashboard_uid: str,
+    api_token: str,
+    cert_path: str,
+    panel_id: Optional[int] = None,
+    panel_title: Optional[str] = None,
+    hours_back: int = 6,
+    max_data_points: int = 1000
+) -> List[Dict[str, Any]]:
+    """
+    Fonction principale pour récupérer les données d'un panel
+    
+    Args:
+        grafana_url: URL de base de Grafana
+        dashboard_uid: UID du dashboard
+        api_token: Token API Grafana
+        cert_path: Chemin vers le certificat .pem
+        panel_id: ID du panel (optionnel)
+        panel_title: Titre du panel (optionnel)
+        hours_back: Nombre d'heures de données à récupérer
+        max_data_points: Nombre maximum de points
+        
+    Returns:
+        Liste des données parsées
+    """
+    # Récupérer le panel
+    panel = get_panel_from_dashboard(
+        grafana_url,
+        dashboard_uid,
+        api_token,
+        cert_path,
+        panel_id,
+        panel_title
+    )
+    
+    if not panel:
+        raise Exception(f"Panel non trouvé (ID: {panel_id}, Title: {panel_title})")
+    
+    # Générer le range de temps
+    from_time, to_time = get_time_range(hours_back)
+    
+    # Construire le payload
+    payload = build_query_payload(panel, from_time, to_time, max_data_points)
+    
+    # Exécuter la requête
+    query_results = execute_panel_query(grafana_url, payload, api_token, cert_path)
+    
+    # Parser et retourner les résultats
+    return parse_query_results(query_results)
+
+
 def main():
     """
     Fonction principale - Exemple d'utilisation
     """
     # ===== CONFIGURATION =====
-    GRAFANA_URL = "https://grafana.example.com"  # Remplacer par votre URL
-    API_TOKEN = "votre_token_api"  # Remplacer par votre token
-    CERT_PATH = "/chemin/vers/certificat.pem"  # Remplacer par le chemin
-    DASHBOARD_UID = "abc123xyz"  # UID du dashboard
-    PANEL_ID = 2  # ID du panel (ou utiliser PANEL_TITLE)
-    # PANEL_TITLE = "Mon Panel"  # Alternativement, chercher par titre
+    GRAFANA_URL = "https://orchestrator-dashboard.group.echonet"  # Votre URL
+    API_TOKEN = "votre_token_api"  # Votre token
+    CERT_PATH = "/chemin/vers/certificat.pem"  # Chemin vers le certificat
+    DASHBOARD_UID = "debe5b0zgerr4b"  # UID du dashboard
+    
+    # Choisir l'une des deux options:
+    PANEL_ID = 2  # Option 1: Chercher par ID
+    # PANEL_TITLE = "Mon Panel"  # Option 2: Chercher par titre
+    
     HOURS_BACK = 6  # Récupérer les 6 dernières heures
-    VERIFY_SSL = True  # Mettre False si certificat auto-signé
     
     print("=== Récupération des données Grafana ===\n")
     
     try:
-        # Étape 1 : Charger le certificat
-        print("1. Chargement du certificat...")
-        cert = load_certificate(CERT_PATH)
-        print(f"   ✓ Certificat chargé: {CERT_PATH}")
+        # Méthode simple avec la fonction tout-en-un
+        print(f"Récupération du panel (ID: {PANEL_ID}) du dashboard {DASHBOARD_UID}...")
         
-        # Étape 2 : Récupérer la configuration du dashboard
-        print("\n2. Récupération de la configuration du dashboard...")
-        dashboard_config = get_dashboard_config(
-            GRAFANA_URL,
-            DASHBOARD_UID,
-            API_TOKEN,
-            cert,
-            VERIFY_SSL
+        parsed_results = get_panel_data(
+            grafana_url=GRAFANA_URL,
+            dashboard_uid=DASHBOARD_UID,
+            api_token=API_TOKEN,
+            cert_path=CERT_PATH,
+            panel_id=PANEL_ID,
+            # panel_title=PANEL_TITLE,  # Ou utiliser le titre
+            hours_back=HOURS_BACK
         )
-        print(f"   ✓ Dashboard récupéré: {dashboard_config['dashboard']['title']}")
         
-        # Étape 3 : Trouver le panel
-        print(f"\n3. Recherche du panel (ID: {PANEL_ID})...")
-        panel = find_panel_by_id(dashboard_config, PANEL_ID)
-        # Ou par titre: panel = find_panel_by_title(dashboard_config, PANEL_TITLE)
+        print(f"✓ {len(parsed_results)} série(s) de données récupérée(s)\n")
         
-        if not panel:
-            raise Exception(f"Panel avec ID {PANEL_ID} non trouvé")
-        
-        print(f"   ✓ Panel trouvé: {panel.get('title', 'Sans titre')}")
-        print(f"   Datasource: {panel.get('datasource', {})}")
-        print(f"   Nombre de targets: {len(panel.get('targets', []))}")
-        
-        # Étape 4 : Générer le range de temps
-        print(f"\n4. Génération du range de temps ({HOURS_BACK}h)...")
-        from_time, to_time = get_time_range(HOURS_BACK)
-        print(f"   De: {from_time}")
-        print(f"   À:  {to_time}")
-        
-        # Étape 5 : Construire le payload
-        print("\n5. Construction du payload de requête...")
-        payload = build_query_payload(panel, from_time, to_time)
-        print(f"   ✓ Payload construit avec {len(payload['queries'])} requête(s)")
-        
-        # Afficher le payload pour debug
-        print("\n   Payload (aperçu):")
-        print(f"   {json.dumps(payload, indent=2)[:500]}...")
-        
-        # Étape 6 : Exécuter la requête
-        print("\n6. Exécution de la requête via /api/ds/query...")
-        query_results = execute_panel_query(
-            GRAFANA_URL,
-            payload,
-            API_TOKEN,
-            cert,
-            VERIFY_SSL
-        )
-        print("   ✓ Requête exécutée avec succès")
-        
-        # Étape 7 : Parser les résultats
-        print("\n7. Parsing des résultats...")
-        parsed_results = parse_query_results(query_results)
-        print(f"   ✓ {len(parsed_results)} série(s) de données récupérée(s)")
-        
-        # Étape 8 : Afficher les résultats
-        print("\n8. Résultats:")
+        # Afficher les résultats
         print(format_results_readable(parsed_results))
         
-        # Sauvegarder les résultats bruts (optionnel)
+        # Sauvegarder les résultats
         with open("grafana_results.json", "w") as f:
-            json.dump({
-                "raw_results": query_results,
-                "parsed_results": parsed_results
-            }, f, indent=2)
+            json.dump(parsed_results, f, indent=2)
         print("\n✓ Résultats sauvegardés dans grafana_results.json")
+        
+        # Exemple: Accéder aux données
+        print("\n=== Exemple d'utilisation des données ===")
+        for series in parsed_results:
+            print(f"\nSérie: {series['name']}")
+            for field in series['fields']:
+                print(f"  - {field['name']} ({field['type']}): {len(field['values'])} valeurs")
+                if field['values']:
+                    print(f"    Première valeur: {field['values'][0]}")
+                    print(f"    Dernière valeur: {field['values'][-1]}")
         
     except Exception as e:
         print(f"\n✗ Erreur: {e}")
