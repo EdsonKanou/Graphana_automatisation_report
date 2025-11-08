@@ -1,159 +1,101 @@
-"""
-Tests complets pour l'envoi d'emails
-Teste toutes les fonctionnalités du module email_sender
-"""
+import requests
+import pandas as pd
+import time
 
-import os
-import sys
-from datetime import datetime
-from dotenv import load_dotenv
-from email_sender import EmailSender, EmailTemplates
+class GrafanaAPI:
+    def __init__(self, base_url: str, api_key: str):
+        self.base_url = base_url.rstrip('/')
+        self.api_key = api_key
+        self.headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json"
+        }
 
-# Charge les variables d'environnement
-load_dotenv()
+    def get_dash(self, uid: str) -> dict:
+        """Récupère le JSON complet d’un dashboard"""
+        url = f"{self.base_url}/api/dashboards/uid/{uid}"
+        r = requests.get(url, headers=self.headers)
+        r.raise_for_status()
+        return r.json()
 
+    def get_panel_from_dashboard(self, uid: str, panel_id: int = None, panel_title: str = None) -> dict:
+        """Retourne un panel spécifique par ID ou titre"""
+        dashboard_json = self.get_dash(uid)
+        panels = dashboard_json['dashboard']['panels']
+        for panel in panels:
+            if (panel_id is not None and panel['id'] == panel_id) or \
+               (panel_title is not None and panel['title'] == panel_title):
+                return panel
+        raise ValueError("Panel non trouvé dans le dashboard")
 
-def print_section(title):
-    """Affiche une section formatée"""
-    print("\n" + "=" * 80)
-    print(f"  {title}")
-    print("=" * 80)
+    def query_panel_data(self, panel: dict, from_s: int = None, to_s: int = None) -> pd.DataFrame:
+        """Exécute la requête d’un panel via /api/ds/query et retourne les données réelles"""
 
+        # 1️⃣ Récupération de la datasource
+        ds = panel.get('datasource', {})
+        if not ds or 'uid' not in ds:
+            raise ValueError("Le panel ne contient pas d’information sur la datasource")
 
-def print_success(message):
-    """Affiche un message de succès"""
-    print(f"✅ {message}")
+        datasource_uid = ds['uid']
+        datasource_type = ds.get('type', 'prometheus')  # par défaut
 
+        # 2️⃣ Définir le range temporel
+        now_ms = int(time.time() * 1000)
+        from_ms = int((time.time() - 3600) * 1000) if from_s is None else from_s * 1000
+        to_ms = now_ms if to_s is None else to_s * 1000
 
-def print_error(message):
-    """Affiche un message d'erreur"""
-    print(f"❌ {message}")
+        # 3️⃣ Construire les queries
+        queries = []
+        for target in panel.get('targets', []):
+            q = {
+                "refId": target.get('refId', 'A'),
+                "datasource": {"uid": datasource_uid, "type": datasource_type},
+                "intervalMs": 15000,
+                "maxDataPoints": 500,
+            }
 
+            # Adapter selon le type de datasource
+            if 'expr' in target:  # Prometheus
+                q["expr"] = target['expr']
+            elif 'rawSql' in target:  # SQL datasource
+                q["rawSql"] = target['rawSql']
 
-def print_info(message):
-    """Affiche une information"""
-    print(f"ℹ️  {message}")
+            q["range"] = {"from": from_ms, "to": to_ms}
+            queries.append(q)
 
+        # 4️⃣ Appel API /api/ds/query
+        url = f"{self.base_url}/api/ds/query"
+        r = requests.post(url, headers=self.headers, json={"queries": queries})
+        r.raise_for_status()
+        data = r.json()
 
-def get_email_config():
-    """Récupère la configuration email depuis .env"""
-    config = {
-        'smtp_server': os.getenv('SMTP_SERVER'),
-        'smtp_port': int(os.getenv('SMTP_PORT', 587)),
-        'smtp_user': os.getenv('SMTP_USER'),
-        'smtp_password': os.getenv('SMTP_PASSWORD'),
-        'from_email': os.getenv('EMAIL_FROM'),
-        'to_emails': os.getenv('EMAIL_TO', '').split(',')
-    }
-    
-    return config
+        # 5️⃣ Extraction des résultats (simplifiée)
+        results = data.get('results', {})
+        if not results:
+            raise ValueError("Aucun résultat dans la réponse Grafana")
 
+        dfs = []
+        for ref, res in results.items():
+            frames = res.get('frames', [])
+            for frame in frames:
+                fields = frame.get('fields', [])
+                frame_data = {}
+                for f in fields:
+                    name = f.get('name', 'col')
+                    vals = f.get('values', {}).get('buffer', f.get('values', []))
+                    frame_data[name] = vals
+                if frame_data:
+                    dfs.append(pd.DataFrame(frame_data))
 
-def test_smtp_connection():
-    """Test 1: Vérification de la connexion SMTP"""
-    print_section("TEST 1: Connexion SMTP")
-    
-    try:
-        config = get_email_config()
-        
-        print_info(f"Serveur SMTP: {config['smtp_server']}")
-        print_info(f"Port: {config['smtp_port']}")
-        print_info(f"Utilisateur: {config['smtp_user']}")
-        
-        # Initialise le client email
-        sender = EmailSender(
-            smtp_server=config['smtp_server'],
-            smtp_port=config['smtp_port'],
-            smtp_user=config['smtp_user'],
-            smtp_password=config['smtp_password'],
-            from_email=config['from_email']
-        )
-        
-        # Teste la connexion
-        if sender.test_connection():
-            print_success("Connexion SMTP réussie")
-            return True
-        else:
-            print_error("Échec de la connexion SMTP")
-            return False
-            
-    except Exception as e:
-        print_error(f"Erreur: {e}")
-        return False
+        return pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame()
 
+grafana = GrafanaAPI("https://grafana.mondomaine.com", "eyJrIjo...")
 
-def test_simple_text_email():
-    """Test 2: Envoi d'un email texte simple"""
-    print_section("TEST 2: Email Texte Simple")
-    
-    try:
-        config = get_email_config()
-        
-        sender = EmailSender(
-            smtp_server=config['smtp_server'],
-            smtp_port=config['smtp_port'],
-            smtp_user=config['smtp_user'],
-            smtp_password=config['smtp_password'],
-            from_email=config['from_email']
-        )
-        
-        # Email HTML simple
-        html_content = """
-        <html>
-            <body>
-                <h1>Test Email Simple</h1>
-                <p>Ceci est un email de test avec du contenu HTML basique.</p>
-                <p>Heure d'envoi: {}</p>
-            </body>
-        </html>
-        """.format(datetime.now().strftime('%d/%m/%Y %H:%M:%S'))
-        
-        print_info("Envoi de l'email de test...")
-        
-        success = sender.send_html_email(
-            to_emails=[config['smtp_user']],  # Envoie à soi-même
-            subject="Test 2 - Email Simple",
-            html_content=html_content
-        )
-        
-        if success:
-            print_success("Email envoyé avec succès")
-            print_info(f"Vérifiez votre boîte mail: {config['smtp_user']}")
-            return True
-        else:
-            print_error("Échec de l'envoi")
-            return False
-            
-    except Exception as e:
-        print_error(f"Erreur: {e}")
-        return False
+# 1️⃣ Récupérer le panel (par UID + titre)
+panel = grafana.get_panel_from_dashboard(uid="abcd1234", panel_title="CPU usage")
 
+# 2️⃣ Exécuter la requête du panel
+df = grafana.query_panel_data(panel)
 
-def test_styled_html_email():
-    """Test 3: Envoi d'un email HTML stylé"""
-    print_section("TEST 3: Email HTML Stylé")
-    
-    try:
-        config = get_email_config()
-        
-        sender = EmailSender(
-            smtp_server=config['smtp_server'],
-            smtp_port=config['smtp_port'],
-            smtp_user=config['smtp_user'],
-            smtp_password=config['smtp_password'],
-            from_email=config['from_email']
-        )
-        
-        # Email HTML avec CSS intégré
-        html_content = """
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <style>
-                body {
-                    font-family: Arial, sans-serif;
-                    background-color: #f5f5f5;
-                    padding: 20px;
-                }
-                .container {
-                    background-color: white;
+# 3️⃣ Visualiser les données réelles du panel
+print(df.head())
