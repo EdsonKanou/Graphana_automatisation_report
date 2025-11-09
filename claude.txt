@@ -128,7 +128,7 @@ Votre export d'image a fonctionné (9095 bytes téléchargés) ! Le fichier `pan
 ```bash
 # Correction du JSON (accolades au lieu de crochets)
 curl -v -k -X POST \
-  -H "Authorization: Bearer ...." \
+  -H "Authorization: Bearer " \
   -H "Content-Type: application/json" \
   https://orchestrator-dashboard.group.echonet/api/datasources/proxy/4/query \
   -d '{
@@ -146,7 +146,7 @@ curl -v -k -X POST \
 ```bash
 # Test simple de connexion
 curl -v -k -X GET \
-  -H "Authorization: Bearer ..." \
+  -H "Authorization: Bearer " \
   https://orchestrator-dashboard.group.echonet/api/datasources/4
 ```
 
@@ -154,7 +154,7 @@ curl -v -k -X GET \
 
 **Étape 1** - Récupérer le dashboard (remplacez `debe5b0zgerr4b` par votre UID) :
 ```bash
-curl -k -H "Authorization: Bearer ..." \
+curl -k -H "Authorization: Bearer " \
   https://orchestrator-dashboard.group.echonet/api/dashboards/uid/debe5b0zgerr4b \
   | jq '.dashboard.panels[] | select(.id==12) | .targets' > panel_12_query.json
 ```
@@ -168,7 +168,7 @@ cat panel_12_query.json
 ```bash
 # Remplacez VOTRE_REQUETE_SQL par celle trouvée dans panel_12_query.json
 curl -v -k -X POST \
-  -H "Authorization: Bearer ..." \
+  -H "Authorization: Bearer " \
   -H "Content-Type: application/json" \
   https://orchestrator-dashboard.group.echonet/api/datasources/proxy/4/query \
   -d '{
@@ -184,7 +184,7 @@ curl -v -k -X POST \
 
 ```bash
 curl -v -k -X POST \
-  -H "Authorization: Bearer ..." \
+  -H "Authorization: Bearer " \
   -H "Content-Type: application/json" \
   https://orchestrator-dashboard.group.echonet/api/ds/query \
   -d '{
