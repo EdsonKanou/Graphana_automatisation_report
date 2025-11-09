@@ -228,3 +228,74 @@ curl -k -H "Authorization: Bearer xxx" \
 ```
 
 Cela me permettra de vous donner la solution exacte ! 🚀
+
+
+
+
+
+
+Excellent ! On avance ! 🎉 L'API fonctionne mais il y a **une erreur SQL**. Je vois le problème :
+
+## 🔴 Erreur identifiée
+
+```
+"error":"db query error: pq: syntax error at or near \"create\""
+```
+
+Le problème vient de la ligne :
+```sql
+AND dem.action IN ('delete', 'update, create')
+                                    ↑ guillemet manquant ici
+```
+
+Il manque un guillemet fermant après `'update'`.
+
+## ✅ Requête corrigée## 📋 Alternative plus lisible avec fichier JSON
+
+#!/bin/bash
+
+# Requête corrigée avec le guillemet manquant ajouté
+curl -v -k -X POST \
+  -H "Authorization: Bearer " \
+  -H "Content-Type: application/json" \
+  https://orchestrator-dashboard.group.echonet/api/ds/query \
+  -d '{
+    "queries": [{
+      "refId": "A",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "cebe2fax1rieob"
+      },
+      "rawSql": "SELECT (SUM(CASE WHEN dem.status = '\''SUCCESS'\'' THEN 1 ELSE 0 END) * 1.0 / COUNT(*)) * 100 FROM m_demand_statistics dem WHERE dem.product IN ('\''cos'\'','\''cos.bucket'\'','\''kafka.cluster'\'','\''kafka.topic'\'','\''lb.roksfast14'\'','\''lb.rokshttps'\'','\''lb.vsifastl4'\'','\''lb.vsihttps'\'','\''mongodb.enterprise'\'','\''mongodb.standard'\'','\''mqaas.queue_manager'\'','\''mqaas.reserved_capacity'\'','\''mqaas.reserved_deployment'\'','\''oradbaas.cdb'\'','\''oradbaas.cluster_mgr'\'','\''oradbaas.db_home'\'','\''oradbaas.pdb'\'','\''oradbaas.vm_cluster'\'','\''package.dmzrc_open'\'','\''postgres'\'','\''realm'\'','\''realm.apcode'\'','\''roks'\'','\''roks.ns'\'','\''server.vsi'\'') AND dem.action IN ('\''delete'\'','\''update'\'','\''create'\'') AND dem.status IN ('\''SUCCESS'\'','\''ON_ERROR'\'') AND dem.create_date >= $_timeFrom() AND dem.end_date <= $_timeTo() AND dem.requestor_uid LIKE '\''ServiceId%'\''",
+      "format": "table"
+    }],
+    "from": "now-1h",
+    "to": "now"
+  }'
+
+Si les échappements de guillemets deviennent trop complexes, créez un fichier JSON séparé :Puis utilisez :
+
+```bash
+curl -v -k -X POST \
+  -H "Authorization: Bearer " \
+  -H "Content-Type: application/json" \
+  https://orchestrator-dashboard.group.echonet/api/ds/query \
+  -d @query.json
+```
+
+## 🎯 Pour extraire uniquement la valeur
+
+Une fois la requête corrigée fonctionnelle, ajoutez `| jq` pour extraire la valeur :
+
+```bash
+curl -k -X POST \
+  -H "Authorization: Bearer " \
+  -H "Content-Type: application/json" \
+  https://orchestrator-dashboard.group.echonet/api/ds/query \
+  -d @query.json \
+  | jq -r '.results.A.frames[0].data.values[0][0]'
+```
+
+Cela devrait vous retourner directement le pourcentage de succès ! 📊
+
+**Testez la requête corrigée et dites-moi si ça fonctionne !** 🚀
