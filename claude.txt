@@ -100,3 +100,131 @@ curl -k -H "Authorization: Bearer <API_KEY>" \
 ```
 
 Dites-moi quel dashboard/panel vous cible et je vous aide à construire la requête exacte ! 🚀
+
+
+
+
+
+
+
+
+
+
+Je vois les problèmes ! Analysons les deux tentatives :
+
+## 🔴 Problèmes identifiés
+
+### **Option A - Erreur 502 Bad Gateway**
+- **Erreur HTTP 502** : Le proxy Grafana ne peut pas atteindre PostgreSQL ou la requête est mal formatée
+- **JSON invalide** : `'["rawSql": "SELECT 1 "]'` n'est pas un JSON valide (crochets au lieu d'accolades)
+
+### **Option B - Export image : ✅ Succès !**
+Votre export d'image a fonctionné (9095 bytes téléchargés) ! Le fichier `panel.png` devrait contenir une capture du panel.
+
+## 🛠️ Solutions corrigées
+
+### **Solution 1 : Corriger l'appel API datasource proxy**
+
+```bash
+# Correction du JSON (accolades au lieu de crochets)
+curl -v -k -X POST \
+  -H "Authorization: Bearer glsa_EahQphwQdMy7oV0ca5aLLRXAORRNJO61_9f087d84" \
+  -H "Content-Type: application/json" \
+  https://orchestrator-dashboard.group.echonet/api/datasources/proxy/4/query \
+  -d '{
+    "queries": [{
+      "refId": "A",
+      "rawSql": "SELECT 1 AS test",
+      "format": "table",
+      "datasourceId": 4
+    }]
+  }'
+```
+
+### **Solution 2 : Tester la connectivité PostgreSQL via Grafana**
+
+```bash
+# Test simple de connexion
+curl -v -k -X GET \
+  -H "Authorization: Bearer glsa_EahQphwQdMy7oV0ca5aLLRXAORRNJO61_9f087d84" \
+  https://orchestrator-dashboard.group.echonet/api/datasources/4
+```
+
+### **Solution 3 : Récupérer la requête du panel puis l'exécuter**
+
+**Étape 1** - Récupérer le dashboard (remplacez `debe5b0zgerr4b` par votre UID) :
+```bash
+curl -k -H "Authorization: Bearer glsa_EahQphwQdMy7oV0ca5aLLRXAORRNJO61_9f087d84" \
+  https://orchestrator-dashboard.group.echonet/api/dashboards/uid/debe5b0zgerr4b \
+  | jq '.dashboard.panels[] | select(.id==12) | .targets' > panel_12_query.json
+```
+
+**Étape 2** - Examiner la requête extraite :
+```bash
+cat panel_12_query.json
+```
+
+**Étape 3** - Utiliser la vraie requête SQL du panel :
+```bash
+# Remplacez VOTRE_REQUETE_SQL par celle trouvée dans panel_12_query.json
+curl -v -k -X POST \
+  -H "Authorization: Bearer glsa_EahQphwQdMy7oV0ca5aLLRXAORRNJO61_9f087d84" \
+  -H "Content-Type: application/json" \
+  https://orchestrator-dashboard.group.echonet/api/datasources/proxy/4/query \
+  -d '{
+    "queries": [{
+      "refId": "A",
+      "rawSql": "VOTRE_REQUETE_SQL_ICI",
+      "format": "table"
+    }]
+  }'
+```
+
+### **Solution 4 : Alternative - API Query directe (Grafana 12.x)**
+
+```bash
+curl -v -k -X POST \
+  -H "Authorization: Bearer glsa_EahQphwQdMy7oV0ca5aLLRXAORRNJO61_9f087d84" \
+  -H "Content-Type: application/json" \
+  https://orchestrator-dashboard.group.echonet/api/ds/query \
+  -d '{
+    "queries": [{
+      "refId": "A",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "cebe2fax1rieob"
+      },
+      "rawSql": "SELECT 1 AS test",
+      "format": "table"
+    }],
+    "from": "now-1h",
+    "to": "now"
+  }'
+```
+
+## 🎯 Plan d'action recommandé
+
+1. **D'abord**, récupérez la définition complète du panel 12 :
+```bash
+curl -k -H "Authorization: Bearer glsa_EahQphwQdMy7oV0ca5aLLRXAORRNJO61_9f087d84" \
+  https://orchestrator-dashboard.group.echonet/api/dashboards/uid/debe5b0zgerr4b \
+  | jq '.dashboard.panels[] | select(.id==12)'
+```
+
+2. **Envoyez-moi** le résultat JSON, je pourrai alors :
+   - Extraire la requête SQL exacte
+   - Construire l'appel API correct avec les bons paramètres
+   - Identifier pourquoi le proxy retourne 502
+
+3. **Si l'erreur 502 persiste**, deux causes possibles :
+   - PostgreSQL n'est pas accessible depuis Grafana
+   - La configuration du datasource a un problème
+
+**Pouvez-vous me partager le résultat de cette commande ?**
+```bash
+curl -k -H "Authorization: Bearer glsa_EahQphwQdMy7oV0ca5aLLRXAORRNJO61_9f087d84" \
+  https://orchestrator-dashboard.group.echonet/api/dashboards/uid/debe5b0zgerr4b \
+  | jq '.dashboard.panels[] | select(.id==12)'
+```
+
+Cela me permettra de vous donner la solution exacte ! 🚀
