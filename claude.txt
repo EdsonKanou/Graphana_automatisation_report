@@ -1,0 +1,102 @@
+Bonjour ! Je comprends votre situation. Vous avez raison : l'API `/api/ds/query` n'existe pas dans toutes les versions de Grafana ou nécessite une approche spécifique.
+
+Voici **plusieurs alternatives** pour récupérer les valeurs réelles de votre dashboard :
+
+## 📊 Solutions recommandées
+
+### **1. API Query Datasource (recommandée pour Grafana 12.x)**
+
+Pour Grafana 12.1.0, utilisez l'endpoint `/api/datasources/proxy/{id}/query` :
+
+```bash
+curl -k -X POST \
+  -H "Authorization: Bearer <API_KEY>" \
+  -H "Content-Type: application/json" \
+  https://<ton-grafana>/api/datasources/proxy/4/query \
+  -d '{
+    "queries": [
+      {
+        "refId": "A",
+        "format": "table",
+        "rawSql": "SELECT * FROM ma_table LIMIT 10",
+        "datasourceId": 4
+      }
+    ]
+  }'
+```
+
+### **2. API Dashboard + Reconstruction de la requête**
+
+Récupérez d'abord la définition du panel, puis exécutez la requête :
+
+**Étape 1** - Récupérer le dashboard complet :
+```bash
+curl -k -H "Authorization: Bearer <API_KEY>" \
+  https://<ton-grafana>/api/dashboards/uid/<DASHBOARD_UID>
+```
+
+**Étape 2** - Extraire la requête SQL du panel :
+```json
+{
+  "panels": [{
+    "targets": [{
+      "rawSql": "SELECT time, value FROM metrics WHERE ...",
+      "datasource": {"uid": "cebe2fax1rieob"}
+    }]
+  }]
+}
+```
+
+**Étape 3** - Exécuter la requête directement contre PostgreSQL :
+```bash
+# Option A : Via l'API Grafana datasource proxy
+curl -k -X POST \
+  -H "Authorization: Bearer <API_KEY>" \
+  -H "Content-Type: application/json" \
+  https://<ton-grafana>/api/datasources/proxy/4/query \
+  -d '{"rawSql": "VOTRE_REQUETE_ICI"}'
+
+# Option B : Directement sur PostgreSQL (si accès possible)
+psql -h <postgres-host> -U <user> -d <database> -c "VOTRE_REQUETE_ICI"
+```
+
+### **3. API Annotations (si applicable)**
+
+Si votre panel utilise des annotations :
+```bash
+curl -k -H "Authorization: Bearer <API_KEY>" \
+  "https://<ton-grafana>/api/annotations?dashboardId=<ID>&from=<timestamp>&to=<timestamp>"
+```
+
+### **4. Export via API Rendering (capture d'écran + OCR)**
+
+Solution de dernier recours - exporter le panel en image :
+```bash
+curl -k -H "Authorization: Bearer <API_KEY>" \
+  "https://<ton-grafana>/render/d-solo/<DASHBOARD_UID>/<PANEL_ID>?orgId=1&from=now-6h&to=now&width=1000&height=500" \
+  -o panel.png
+```
+
+## 🔍 Informations dont j'ai besoin pour vous aider davantage :
+
+1. **UID du dashboard** : Pour récupérer sa définition complète
+2. **ID du panel** : Le numéro du panel spécifique qui vous intéresse
+3. **Type de visualisation** : Graph, Table, Stat, Gauge, etc. ?
+4. **Exemple de requête SQL** du panel (si vous l'avez sous les yeux dans l'interface Grafana)
+5. **Accès direct à PostgreSQL** : Pouvez-vous vous connecter directement à la base de données PostgreSQL ?
+
+## ✅ Prochaine étape recommandée
+
+Essayez d'abord l'**option 2** (récupérer le dashboard puis exécuter la requête), car c'est la plus fiable :
+
+```bash
+# 1. Récupérer le dashboard
+curl -k -H "Authorization: Bearer <API_KEY>" \
+  https://<ton-grafana>/api/dashboards/uid/<DASHBOARD_UID> | jq '.'
+
+# 2. Cherchez dans la sortie JSON la section "targets" de votre panel
+# 3. Copiez la requête SQL
+# 4. Exécutez-la via le proxy datasource ou directement sur PostgreSQL
+```
+
+Dites-moi quel dashboard/panel vous cible et je vous aide à construire la requête exacte ! 🚀
