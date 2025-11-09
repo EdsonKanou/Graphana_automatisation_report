@@ -425,4 +425,68 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    main() 
+    
+    
+curl --cacert /path/to/server_cert.pem \
+  -H "Authorization: Bearer <API_KEY>" \
+  -H "Content-Type: application/json" \
+  -X POST \
+  https://orchestrator-dashboard.group.echonet/api/datasources/proxy/4/query \
+  -d '{
+        "queries": [
+          {
+            "refId": "A",
+            "format": "table",
+            "rawSql": "SELECT count(*) FROM logs WHERE level = '\''error'\''",
+            "datasourceId": 4
+          }
+        ]
+      }'
+
+import requests
+
+def query_postgres_via_grafana(grafana_url, api_key, datasource_id, raw_sql, verify_cert_path=None):
+    """
+    Exécute une requête SQL via Grafana proxy PostgreSQL.
+    - verify_cert_path : chemin vers le certificat serveur à utiliser pour vérifier SSL.
+    """
+    url = f"{grafana_url.rstrip('/')}/api/datasources/proxy/{datasource_id}/query"
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json"
+    }
+
+    payload = {
+        "queries": [
+            {
+                "refId": "A",
+                "format": "table",
+                "rawSql": raw_sql,
+                "datasourceId": datasource_id
+            }
+        ]
+    }
+
+    r = requests.post(url, headers=headers, json=payload, verify=verify_cert_path)
+    r.raise_for_status()
+    return r.json()
+
+
+
+
+grafana_url = "https://orchestrator-dashboard.group.echonet"
+api_key = "<API_KEY>"
+datasource_id = 4
+raw_sql = "SELECT count(*) FROM logs WHERE level = 'error'"
+verify_cert_path = "/path/to/server_cert.pem"  # chemin vers certificat serveur
+
+data = query_postgres_via_grafana(grafana_url, api_key, datasource_id, raw_sql, verify_cert_path)
+print(data)
+
+# Pour extraire la valeur réelle
+frames = data["results"]["A"]["frames"]
+if frames:
+    values = frames[0]["data"]["values"]
+    print("Résultat =", values[0][0])
+
