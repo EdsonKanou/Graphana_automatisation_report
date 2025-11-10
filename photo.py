@@ -242,3 +242,62 @@ if __name__ == "__main__":
     print("=" * 70)
     print("✅ TERMINÉ - Captures dans:", OUTPUT_DIR)
     print("=" * 70)
+    
+    
+    
+    #!/usr/bin/env python3
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service
+from webdriver_manager.chrome import ChromeDriverManager
+import time
+import os
+
+GRAFANA_URL = "https://orchestrator-dashboard.group.echonet"
+API_KEY = "glsa_EghQphwQdMxZoVQca5aLLRXAQRRNJQ61_9t087d84"
+DASHBOARD_UID = "debe5b0zgerr4b"
+
+def capture_with_selenium(time_from="now-24h"):
+    url = f"{GRAFANA_URL}/d/{DASHBOARD_UID}?orgId=1&from={time_from}&to=now&kiosk"
+    
+    # Configuration Chrome
+    options = Options()
+    options.add_argument('--headless')
+    options.add_argument('--ignore-certificate-errors')
+    options.add_argument('--window-size=1920,1080')
+    options.add_argument(f'--authorization=Bearer {API_KEY}')
+    
+    # Lancer Chrome
+    driver = webdriver.Chrome(
+        service=Service(ChromeDriverManager().install()),
+        options=options
+    )
+    
+    driver.get(url)
+    time.sleep(8)  # Attendre le chargement
+    
+    filename = f"dashboard_{time_from.replace('-', '_')}.png"
+    driver.save_screenshot(filename)
+    print(f"✅ Capture: {filename}")
+    
+    driver.quit()
+
+# Utilisation
+capture_with_selenium("now-24h")
+capture_with_selenium("now-14d")
+capture_with_selenium("now-90d")
+
+
+
+# Remplacez cette ligne :
+browser = pw.chromium.launch(
+    headless=True,
+    args=['--ignore-certificate-errors']
+)
+
+# Par celle-ci :
+browser = pw.chromium.launch(
+    headless=True,
+    channel="chrome",  # ← Utilise Chrome installé
+    args=['--ignore-certificate-errors']
+)
