@@ -1,0 +1,16 @@
+# Dépendances du projet Grafana Reporter
+# Python 3.12.12
+
+# Requêtes HTTP
+requests==2.31.0
+urllib3==2.1.0
+
+# Gestion des variables d'environnement
+python-dotenv==1.0.0
+
+# Optionnel: conversion HTML vers texte (amélioration)
+# html2text==2020.1.16
+
+# Optionnel: analyse HTML (si nécessaire)
+# beautifulsoup4==4.12.2
+# lxml==4.9.3
