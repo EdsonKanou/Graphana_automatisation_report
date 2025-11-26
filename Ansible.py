@@ -1,9 +1,9 @@
 import json
 import time
 import logging
-from typing import Optional
-
 import requests
+from dataclasses import dataclass, field
+from typing import Optional
 from pydantic import BaseModel, Field
 
 
@@ -18,29 +18,36 @@ logger = logging.getLogger(__name__)
 
 
 # ============================================================
-# Pydantic Models
+# RunConfig → external Pydantic model
 # ============================================================
 class RunConfig(BaseModel):
     with_wait: bool = True
-    timeout: int = Field(default=900, description="Timeout en secondes")
-    polling_interval: int = Field(default=5, description="Temps entre 2 checks du job")
-
-
-class DataLaunchJobTemplate(BaseModel):
-    name: str
-    extra_vars: dict
-    inventory: Optional[str] = None
-    run: RunConfig = RunConfig()
+    timeout: int = Field(default=900, description="Timeout in seconds")
+    polling_interval: int = Field(default=5, description="Seconds between status checks")
 
 
 # ============================================================
-# Main Ansible Client Class
+# Ansible class
 # ============================================================
 class Ansible:
 
+    # --------------------------------------------------------
+    # Internal dataclass for job launch parameters
+    # --------------------------------------------------------
+    @dataclass
+    class DataLaunchJobTemplate:
+        name: str
+        extra_vars: dict
+        inventory: Optional[str] = None
+        run: RunConfig = field(default_factory=RunConfig)   # <-- FIX HERE
+
+    # --------------------------------------------------------
+    # Init
+    # --------------------------------------------------------
     def __init__(self, ansible_url: str, ansible_token: str) -> None:
         self.url = ansible_url.rstrip("/")
         self.token = ansible_token
+
         self.session = requests.Session()
         self.session.headers.update({
             "Authorization": f"Bearer {self.token}",
@@ -48,7 +55,7 @@ class Ansible:
         })
 
     # --------------------------------------------------------
-    # Internal helpers
+    # HTTP helpers
     # --------------------------------------------------------
     def _session_post(self, endpoint: str, payload: dict) -> int:
         url = f"{self.url}/api/v2/{endpoint}"
@@ -56,13 +63,10 @@ class Ansible:
 
         resp = self.session.post(url, json=payload)
         if resp.status_code not in {200, 201}:
-            logger.error(f"POST {url} → {resp.status_code} : {resp.text}")
+            logger.error(f"POST {url} returned {resp.status_code}: {resp.text}")
             raise RuntimeError(f"POST error: {resp.text}")
 
-        data = resp.json()
-        job_id = data.get("id")
-        logger.info(f"POST réussi → job_id={job_id}")
-        return job_id
+        return resp.json().get("id")
 
     def _session_get(self, endpoint: str) -> dict:
         url = f"{self.url}/api/v2/{endpoint}"
@@ -70,13 +74,13 @@ class Ansible:
 
         resp = self.session.get(url)
         if resp.status_code != 200:
-            logger.error(f"GET {url} → {resp.status_code} : {resp.text}")
+            logger.error(f"GET {url} returned {resp.status_code}: {resp.text}")
             raise RuntimeError(f"GET error: {resp.text}")
 
         return resp.json()
 
     # --------------------------------------------------------
-    # API lookup helpers
+    # Inventory / template helpers
     # --------------------------------------------------------
     def get_job_template_by_name(self, name: str) -> Optional[int]:
         result = self._session_get(f"job_templates/?name={name}")
@@ -96,20 +100,20 @@ class Ansible:
     # Wait for job completion
     # --------------------------------------------------------
     def wait_status(self, job_id: int, *, timeout: int, interval: int) -> str:
-        logger.info(f"Attente du job {job_id} (timeout={timeout}s, interval={interval}s)")
+        logger.info(f"Waiting for job {job_id} (timeout={timeout}s, interval={interval}s)")
         start = time.time()
 
         while True:
             status = self.get_jobs_status(job_id)
-            logger.debug(f"Job {job_id} → statut : {status}")
+            logger.debug(f"Job {job_id} → status: {status}")
 
             if status in ("successful", "failed", "error", "canceled"):
-                logger.info(f"Job {job_id} terminé avec statut : {status}")
+                logger.info(f"Job {job_id} finished with status: {status}")
                 return status
 
             if (time.time() - start) >= timeout:
-                logger.error(f"Timeout après {timeout}s pour le job {job_id}")
-                raise TimeoutError(f"Timeout après {timeout}s pour le job {job_id}")
+                logger.error(f"Timeout after {timeout}s for job {job_id}")
+                raise TimeoutError(f"Timeout after {timeout}s for job {job_id}")
 
             time.sleep(interval)
 
@@ -121,49 +125,32 @@ class Ansible:
         data: DataLaunchJobTemplate,
     ) -> dict:
 
-        logger.info(f"Lancement du job template '{data.name}'")
+        logger.info(f"Launching job template '{data.name}'")
 
-        # -------------------------------
-        # Préparation du payload
-        # -------------------------------
-        payload = {
-            "extra_vars": json.dumps(data.extra_vars)
-        }
+        payload = {"extra_vars": json.dumps(data.extra_vars)}
 
-        # Inventory optionnel
+        # Inventory resolution
         if data.inventory:
             inventory_id = self.get_inventory_by_name(data.inventory)
-            logger.info(f"Inventory '{data.inventory}' → ID = {inventory_id}")
-
             if inventory_id is None:
-                raise ValueError(f"Inventory '{data.inventory}' introuvable")
+                raise ValueError(f"Inventory '{data.inventory}' not found")
 
+            logger.info(f"Inventory '{data.inventory}' resolved to ID = {inventory_id}")
             payload["inventory"] = inventory_id
 
-        # -------------------------------
-        # Résolution du job template
-        # -------------------------------
+        # Template resolution
         job_template_id = self.get_job_template_by_name(data.name)
-
         if job_template_id is None:
-            logger.error(f"Job template '{data.name}' introuvable")
-            raise ValueError(f"Job template '{data.name}' introuvable")
+            logger.error(f"Job template '{data.name}' not found")
+            raise ValueError(f"Job template '{data.name}' not found")
 
-        logger.info(f"Job template '{data.name}' → ID = {job_template_id}")
-
-        # -------------------------------
-        # Lancement du job
-        # -------------------------------
         endpoint = f"job_templates/{job_template_id}/launch/"
         job_id = self._session_post(endpoint, payload)
 
-        logger.info(f"Job lancé → job_id = {job_id}")
+        logger.info(f"Job launched → job_id = {job_id}")
 
-        # -------------------------------
-        # Attente optionnelle
-        # -------------------------------
+        # Optional waiting
         if data.run.with_wait:
-            logger.info("with_wait=True → attente du statut final")
             status = self.wait_status(
                 job_id,
                 timeout=data.run.timeout,
@@ -171,5 +158,4 @@ class Ansible:
             )
             return {"job_id": job_id, "status": status}
 
-        logger.info("with_wait=False → retour immédiat")
         return {"job_id": job_id}
