@@ -1,0 +1,66 @@
+**Objet : Migration requests → httpx - Situation et proposition**
+
+---
+
+Bonjour [Nom du manager],
+
+Suite à la code review de la migration de `requests` vers `httpx` sur le projet, j'ai identifié une dépendance critique à traiter.
+
+## 📋 Situation actuelle
+
+Le fichier `base.py` contient une fonction `log_response_error_and_raise()` qui est utilisée par **plusieurs modules** du projet. Cette fonction utilise actuellement des attributs spécifiques à `requests` (`response.ok`, `response.reason`) qui ne sont pas compatibles avec `httpx`.
+
+**Impact identifié :**
+- La migration directe de `keycloak.py` vers `httpx` cause des erreurs dans `base.py`
+- Plusieurs fichiers dépendent de `base.py` et utilisent encore `requests`
+- Une modification brutale de `base.py` casserait les modules non encore migrés
+
+## 🎯 Propositions
+
+### **Option 1 : Migration progressive (recommandée)**
+- Modifier `base.py` pour supporter **à la fois** `requests` ET `httpx` via une détection automatique du type de response
+- Migrer les modules vers `httpx` **un par un** sans casser l'existant
+- Supprimer `requests` une fois tous les modules migrés
+
+**Avantages :**
+- ✅ Risque minimal (pas de régression sur les modules existants)
+- ✅ Tests et validation par étapes
+- ✅ Déploiement incrémental possible
+
+**Inconvénients :**
+- ⚠️ Dépendance temporaire aux 2 librairies
+
+**Estimation :** 2-3 jours de développement + tests
+
+---
+
+### **Option 2 : Migration complète (Big Bang)**
+- Migrer **tous** les fichiers utilisant `base.py` vers `httpx` simultanément
+- Modifier `base.py` pour ne supporter que `httpx`
+
+**Avantages :**
+- ✅ Codebase unifié immédiatement
+- ✅ Suppression de `requests` dès le premier déploiement
+
+**Inconvénients :**
+- ⚠️ Risque élevé (beaucoup de modifications simultanées)
+- ⚠️ Tests exhaustifs nécessaires sur tous les modules
+- ⚠️ Rollback complexe en cas de problème
+
+**Estimation :** 5-7 jours de développement + tests approfondis
+
+---
+
+## 🚀 Ma recommandation
+
+Je recommande l'**Option 1** pour minimiser les risques et permettre une validation progressive. Nous pourrions procéder ainsi :
+
+1. Modifier `base.py` pour la compatibilité hybride (0,5 jour)
+2. Finaliser et tester `keycloak.py` (0,5 jour)
+3. Migrer les autres modules progressivement selon les priorités (1-2 jours)
+4. Nettoyer et supprimer `requests` (0,5 jour)
+
+**Besoin d'arbitrage :** Quelle option privilégiez-vous ? Y a-t-il des contraintes de planning ou de déploiement à prendre en compte ?
+
+Merci,  
+[Ton nom]
