@@ -181,48 +181,92 @@ def validate_account_names(cls, v: List[str]) -> List[str]:
 
 
 #############################################################################
-
+from pydantic import BaseModel, Field, field_validator
 from typing import List
-from pydantic import Field, field_validator
 
 class AccountExtractIamPayload(ProductActionPayload):
     account_names: List[str] = Field(
         ...,
         min_items=1,
-        description="List of account names to extract IAM from",
-        examples=[["ac0021000259", "ac0021000260"]],
+        description="Specify the list of account names",
     )
 
     @field_validator("account_names")
     @classmethod
     def validate_account_names(cls, v: List[str]) -> List[str]:
-        cleaned: list[str] = []
-        seen: set[str] = set()
+        if not v:
+            raise ValueError("account_names cannot be empty.")
 
         for name in v:
-            if not isinstance(name, str) or not name.strip():
+            if not name or not name.strip():
                 raise ValueError(
-                    "account_names cannot contain empty or blank values"
+                    "account_names cannot contain empty or blank values."
                 )
-
-            normalized = name.strip()
-
-            if normalized in seen:
-                raise ValueError(
-                    f"Duplicate account detected: '{normalized}'"
-                )
-
-            seen.add(normalized)
-            cleaned.append(normalized)
-
-        return cleaned
+        return v
 
     model_config = {
-        "extra": "forbid"  # 🔒 bloque tout champ non attendu
+        "extra": "forbid"  # 🔥 TRÈS IMPORTANT
     }
 
 
 
 
 
+def extract_iam_to_excel(
+    directory_path: str,
+    payload: AccountExtractIamPayload = depends(payload_dependency),
+    db_session: SASession = depends(sqlalchemy_session_dependency),
+    vault: Vault = depends(vault_dependency),
+) -> None:
+    from account.services.extract_iam_account import (
+        DMZRC_VIRTUEL_ECOSYSTEM,
+        PAASV4_VIRTUEL_ECOSYSTEM,
+    )
 
+    processed_accounts: set[str] = set()
+
+    for account_name in payload.account_names:
+        if account_name in processed_accounts:
+            logger.warning(
+                f"Skipping duplicate account extraction: {account_name}"
+            )
+            continue
+
+        processed_accounts.add(account_name)
+
+        try:
+            account = get_account_by_name(account_name, db_session)
+            if account is None:
+                raise ValueError(
+                    f"Account {account_name} not found in database"
+                )
+
+            if account.account_type == "PAASV4":
+                apikey = vault.get_secret(
+                    f"{account.account_number}/account-owner",
+                    mount_point="ibmsid",
+                    namespace=PAASV4_VIRTUEL_ECOSYSTEM,
+                )["api_key"]
+            else:
+                apikey = vault.get_secret(
+                    f"{account.account_number}/account-owner",
+                    mount_point="ibmsid",
+                    namespace=DMZRC_VIRTUEL_ECOSYSTEM,
+                )["api_key"]
+
+            extract_iam_to_excel_file(
+                apikey,
+                account.account_id,
+                account.account_name,
+                directory_path,
+            )
+
+            logger.info(
+                f"TAM extracted to Excel for account: {account.account_number}"
+            )
+
+        except Exception as e:
+            logger.error(
+                f"Error extracting IAM for account {account_name}: {e}"
+            )
+            raise
