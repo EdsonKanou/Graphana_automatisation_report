@@ -134,3 +134,47 @@ def zip_generated_directory(
     except Exception as e:
         logger.error(f"Error zipping directory '{directory_path}': {e}")
         raise
+
+
+
+
+from typing import List
+from pydantic import Field, field_validator
+
+class AccountExtractIamPayload(ProductActionPayload):
+    account_names: List[str] = Field(
+        ...,
+        description="Specify the list of account names",
+        examples=[["ac0021000259"]],
+        min_items=1,
+    )
+
+    @field_validator("account_names")
+    @classmethod
+    def validate_account_names(cls, v: List[str]) -> List[str]:
+        if not v:
+            raise ValueError("account_names cannot be empty.")
+
+        for name in v:
+            if not isinstance(name, str) or not name.strip():
+                raise ValueError(
+                    "account_names cannot contain empty or blank values."
+                )
+
+        return v
+
+
+
+
+
+@field_validator("account_names")
+@classmethod
+def validate_account_names(cls, v: List[str]) -> List[str]:
+    cleaned = []
+
+    for name in v:
+        if not name or not name.strip():
+            raise ValueError("account_names cannot contain empty values.")
+        cleaned.append(name.strip().lower())
+
+    return list(dict.fromkeys(cleaned))  # supprime doublons
