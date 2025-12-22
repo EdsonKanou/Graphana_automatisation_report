@@ -178,3 +178,51 @@ def validate_account_names(cls, v: List[str]) -> List[str]:
         cleaned.append(name.strip().lower())
 
     return list(dict.fromkeys(cleaned))  # supprime doublons
+
+
+#############################################################################
+
+from typing import List
+from pydantic import Field, field_validator
+
+class AccountExtractIamPayload(ProductActionPayload):
+    account_names: List[str] = Field(
+        ...,
+        min_items=1,
+        description="List of account names to extract IAM from",
+        examples=[["ac0021000259", "ac0021000260"]],
+    )
+
+    @field_validator("account_names")
+    @classmethod
+    def validate_account_names(cls, v: List[str]) -> List[str]:
+        cleaned: list[str] = []
+        seen: set[str] = set()
+
+        for name in v:
+            if not isinstance(name, str) or not name.strip():
+                raise ValueError(
+                    "account_names cannot contain empty or blank values"
+                )
+
+            normalized = name.strip()
+
+            if normalized in seen:
+                raise ValueError(
+                    f"Duplicate account detected: '{normalized}'"
+                )
+
+            seen.add(normalized)
+            cleaned.append(normalized)
+
+        return cleaned
+
+    model_config = {
+        "extra": "forbid"  # 🔒 bloque tout champ non attendu
+    }
+
+
+
+
+
+
