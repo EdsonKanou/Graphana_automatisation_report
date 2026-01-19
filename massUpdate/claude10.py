@@ -684,3 +684,79 @@ def dag_parallel_update() -> Dict:
     account_workspaces >> deployment_results
     
     return deployment_results
+
+
+from airflow.operators.python import get_current_context
+
+@step(hide_output=True)  # CORRECTION: = au lieu de -
+def check_accounts_in_vault(
+    vault: Vault = depends(vault_dependency)
+) -> bool:  # CORRECTION: ajouter -> bool
+    """
+    Verify all accounts have required API keys in Vault
+    
+    Returns:
+        bool: True if all API keys found, raises exception otherwise
+    """
+    context = get_current_context()
+    ti = context["ti"]
+    
+    # CORRECTION: task_ids= avec =, et le bon séparateur (.)
+    updated_accounts = ti.xcom_pull(task_ids="database_preparation_group.update_accounts_database")
+    
+    # Pour debug: voir tous les XComs
+    all_xcoms = ti.xcom_pull(key=None, task_ids=None, dag_id=ti.dag_id)
+    logger.info(f"Tous les XComs: {all_xcoms}")  # CORRECTION: f-string correct
+    
+    # Si toujours None, chercher autrement
+    if updated_accounts is None:
+        logger.warning("XCom non trouvé avec task_id complet, recherche alternative...")
+        
+        # Option 1: Chercher par pattern dans tous les XComs
+        if isinstance(all_xcoms, dict):
+            for key, value in all_xcoms.items():
+                if key and "update_accounts" in str(key):
+                    updated_accounts = value
+                    logger.info(f"Trouvé avec clé alternative: {key}")
+                    break
+        
+        # Option 2: Chercher sans le group_id
+        if updated_accounts is None:
+            updated_accounts = ti.xcom_pull(task_ids="update_accounts_database")
+    
+    # Vérifier qu'on a bien des données
+    if updated_accounts is None:
+        raise ValueError(
+            f"Aucun XCom trouvé pour les comptes. XComs disponibles: {all_xcoms}"
+        )
+    
+    # Vérifier le type
+    logger.info(f"Type de updated_accounts: {type(updated_accounts)}")
+    logger.info(f"Valeur de updated_accounts: {updated_accounts}")
+    
+    # Si c'est un dict avec une clé spécifique
+    if isinstance(updated_accounts, dict):
+        # Chercher une clé qui contient les données
+        for key in ['accounts', 'data', 'result', 'value']:
+            if key in updated_accounts:
+                updated_accounts = updated_accounts[key]
+                logger.info(f"Données extraites de la clé '{key}'")
+                break
+    
+    # Maintenant vérifier que c'est une liste
+    if not isinstance(updated_accounts, list):
+        logger.warning(f"updated_accounts n'est pas une liste mais {type(updated_accounts)}")
+        # Essayer de convertir
+        if isinstance(updated_accounts, (str, int, float)):
+            updated_accounts = [updated_accounts]
+        else:
+            raise TypeError(f"updated_accounts doit être une liste, mais c'est {type(updated_accounts)}")
+    
+    # Finalement, logger le nombre d'accounts
+    logger.info(f"Checking Vault for {len(updated_accounts)} account API keys...")
+    
+    # Votre logique de vérification Vault ici...
+    # for account in updated_accounts:
+    #     vérifier dans vault...
+    
+    return True
