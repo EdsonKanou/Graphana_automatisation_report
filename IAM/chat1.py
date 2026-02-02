@@ -36,3 +36,27 @@ compression_summary = zip_all_results(
     directory_path=directory,
     mode_info=mode_info
 )
+
+
+
+3########
+
+
+@step(trigger_rule="all_done")
+def extraction_barrier():
+    """
+    Task technique qui sert uniquement à :
+    - attendre la fin de toutes les mapped tasks
+    - NE PAS propager l'état FAILED
+    """
+    pass
+
+
+extraction >> extraction_barrier
+
+compression_summary = zip_all_results(
+    directory_path=directory,
+    mode_info=mode_info
+)
+
+extraction_barrier >> compression_summary
