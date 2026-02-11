@@ -114,75 +114,43 @@ def dag_parallel_update() -> None:
         return updated_accounts
 
     # =========================
-    # STEP 3 - CHECK VAULT & GET SCHEMATICS API KEY
+    # STEP 3 - CHECK VAULT & PREPARE API KEYS
     # =========================
     @step(hide_output=True)
-    def check_vault_and_get_schematics_key(
+    def check_vault_and_prepare_api_keys(
         updated_accounts: list[dict],
         vault: Vault = depends(vault_dependency),
         db_session: SASession = depends(sqlalchemy_session_dependency),
     ) -> dict:
-        """Verify accounts have API keys in Vault and get Schematics API key"""
-
-        # Check all accounts have API keys
-        logger.info(f"Checking Vault for {len(updated_accounts)} account API keys...")
+        """
+        Check Vault for API keys and prepare aligned lists.
         
-        accounts_with_api_keys: list[dict] = []
+        Returns a dict with:
+        - accounts_list: list of account dicts (same order as input)
+        - schematics_api_keys_list: list of API keys (aligned with accounts)
+        
+        For accounts without API key, we put a placeholder to maintain alignment.
+        """
+
+        logger.info(f"Checking Vault for {len(updated_accounts)} account API keys...")
+
+        accounts_list: list[dict] = []
+        schematics_api_keys_list: list[str] = []
         accounts_without_api_keys: list[str] = []
 
-        for account_info in updated_accounts:
-            account_number = account_info["account_number"]
-            account_name = account_info["account_name"]
+        # Get GLBHUB API key for Schematics
+        logger.info("Retrieving Schematics API key from GLBHUB account")
+        glbhub_api_key = vault.get_secret(
+            f"{HUB_ACCOUNT_NUMBER}/account-owner",
+            mount_point="ibmsid"
+        )["api_key"]
+        logger.info("OK - Retrieved GLBHUB account API key for Schematics")
 
-            try:
-                api_key_secret = vault.get_secret(
-                    f"{account_number}/account-owner",
-                    mount_point="ibmsid",
-                )
-
-                if api_key_secret is None or "api_key" not in api_key_secret:
-                    logger.warning(
-                        f"API key not found for account {account_name} ({account_number}) - "
-                        f"will be skipped from processing"
-                    )
-                    accounts_without_api_keys.append(account_name)
-                else:
-                    # Add the API key to account info
-                    account_with_key = {
-                        **account_info,
-                        "api_key": api_key_secret["api_key"]
-                    }
-                    accounts_with_api_keys.append(account_with_key)
-
-            except Exception as e:
-                logger.warning(
-                    f"Error accessing Vault for {account_name}: {str(e)} - "
-                    f"will be skipped from processing"
-                )
-                accounts_without_api_keys.append(account_name)
-
-        # Check if we have at least one account with API key
-        if not accounts_with_api_keys:
-            raise DeclineDemandException(
-                "No accounts have valid API keys in Vault. Cannot proceed."
-            )
-
-        if accounts_without_api_keys:
-            logger.warning(
-                f"The following accounts will be skipped (no API key in Vault): "
-                f"{', '.join(accounts_without_api_keys)}"
-            )
-
-        logger.info(
-            f"OK - {len(accounts_with_api_keys)} accounts have valid API keys in Vault"
-        )
-
-        # Get BUHUB details if needed (for WKLAPP accounts)
+        # Check BUHUB if needed
         wlapp_accounts = [
-            acc for acc in accounts_with_api_keys if acc.get("account_type") == "WKLAPP"
+            acc for acc in updated_accounts if acc.get("account_type") == "WKLAPP"
         ]
 
-        buhub_account_details = None
         if wlapp_accounts:
             logger.info("WKLAPP accounts detected - checking for BUHUB account...")
             first_wklapp = wlapp_accounts[0]
@@ -197,45 +165,82 @@ def dag_parallel_update() -> None:
                 )
                 logger.info("BUHUB account details retrieved")
 
-        # Get Schematics API key (GLBHUB)
-        logger.info("Retrieving Schematics API key from GLBHUB account")
-        schematics_api_key = vault.get_secret(
-            f"{HUB_ACCOUNT_NUMBER}/account-owner",
-            mount_point="ibmsid"
-        )["api_key"]
-        logger.info("OK - Retrieved GLBHUB account API key for Schematics")
+        # Process each account and build aligned lists
+        for account_info in updated_accounts:
+            account_number = account_info["account_number"]
+            account_name = account_info["account_name"]
+
+            has_api_key = False
+
+            try:
+                api_key_secret = vault.get_secret(
+                    f"{account_number}/account-owner",
+                    mount_point="ibmsid",
+                )
+
+                if api_key_secret and "api_key" in api_key_secret:
+                    has_api_key = True
+                    logger.info(f"OK - API key found for {account_name}")
+                else:
+                    logger.warning(
+                        f"API key not found in Vault for {account_name} ({account_number})"
+                    )
+
+            except Exception as e:
+                logger.warning(
+                    f"Error accessing Vault for {account_name}: {str(e)}"
+                )
+
+            # Add to lists (maintain alignment)
+            accounts_list.append(account_info)
+
+            if has_api_key:
+                # Use the GLBHUB API key for Schematics backend
+                schematics_api_keys_list.append(glbhub_api_key)
+            else:
+                # Placeholder to maintain alignment - deployment will fail for this account
+                schematics_api_keys_list.append("NO_API_KEY_FOUND_WILL_FAIL")
+                accounts_without_api_keys.append(account_name)
+
+        # Verify alignment
+        if len(accounts_list) != len(schematics_api_keys_list):
+            raise Exception(
+                f"CRITICAL: Lists not aligned! "
+                f"accounts={len(accounts_list)}, api_keys={len(schematics_api_keys_list)}"
+            )
+
+        # Log summary
+        valid_count = len(accounts_list) - len(accounts_without_api_keys)
+
+        if not valid_count:
+            raise DeclineDemandException(
+                "No accounts have valid API keys in Vault. Cannot proceed."
+            )
+
+        if accounts_without_api_keys:
+            logger.warning(
+                f"The following accounts have no API key (will fail during deployment): "
+                f"{', '.join(accounts_without_api_keys)}"
+            )
+
+        logger.info(
+            f"OK - Prepared {len(accounts_list)} accounts for deployment "
+            f"({valid_count} with API keys, {len(accounts_without_api_keys)} without)"
+        )
+
+        # Double-check alignment
+        logger.info(
+            f"ALIGNMENT CHECK: accounts_list={len(accounts_list)}, "
+            f"schematics_api_keys_list={len(schematics_api_keys_list)}"
+        )
 
         return {
-            "accounts_with_api_keys": accounts_with_api_keys,
-            "schematics_api_key": schematics_api_key,
+            "accounts_list": accounts_list,
+            "schematics_api_keys_list": schematics_api_keys_list,
         }
 
     # =========================
-    # STEP 4 - PREPARE DEPLOYMENT DATA
-    # =========================
-    @step
-    def prepare_deployment_data(
-        vault_data: dict,
-    ) -> list[dict]:
-        """Prepare data for parallel deployment"""
-
-        accounts = vault_data["accounts_with_api_keys"]
-        schematics_api_key = vault_data["schematics_api_key"]
-
-        deployment_data: list[dict] = []
-
-        for account_info in accounts:
-            deployment_data.append({
-                "account_info": account_info,
-                "schematics_api_key": schematics_api_key,
-            })
-
-        logger.info(f"Prepared {len(deployment_data)} accounts for parallel deployment")
-
-        return deployment_data
-
-    # =========================
-    # STEP 5 - WORKSPACE + PLAN/APPLY (PARALLEL)
+    # STEP 4 - WORKSPACE + PLAN/APPLY (PARALLEL)
     # =========================
     @step(
         map_index_template="{{ deployment_index }}"
@@ -252,12 +257,19 @@ def dag_parallel_update() -> None:
         from airflow.operators.python import get_current_context
 
         account_name = account_info["account_name"]
-        
+
         # Set custom map index for better tracking
         airflow_context = get_current_context()
         airflow_context["deployment_index"] = f"deploying: {account_name}"
 
         try:
+            # Check if this account has a valid API key
+            if schematics_api_key == "NO_API_KEY_FOUND_WILL_FAIL":
+                raise ValueError(
+                    f"Account {account_name} does not have a valid API key in Vault. "
+                    f"Deployment cannot proceed."
+                )
+
             # Get workspace from database
             logger.info(f"Retrieving workspace for account: {account_name}")
             workspace = get_subscription_by_name(account_name, db_session)
@@ -393,7 +405,7 @@ def dag_parallel_update() -> None:
             raise
 
     # =========================
-    # STEP 6 - AGGREGATION
+    # STEP 5 - AGGREGATION
     # =========================
     @step(trigger_rule="all_done")
     def aggregate_deployment_results(
@@ -432,25 +444,23 @@ def dag_parallel_update() -> None:
     # =========================
     # WORKFLOW
     # =========================
-    
+
     # Phase 1: Validation
     valid_account_names = check_accounts_exist_and_validate()
-    
+
     # Phase 2: Update database
     updated_accounts = update_accounts_database(valid_account_names)
-    
-    # Phase 3: Check Vault and get Schematics API key
-    vault_data = check_vault_and_get_schematics_key(updated_accounts)
-    
-    # Phase 4: Prepare deployment data
-    deployment_data = prepare_deployment_data(vault_data)
-    
-    # Phase 5: Parallel deployment
-    deployment_results = get_workspace_and_update_account.expand_kwargs(
-        deployment_data
+
+    # Phase 3: Check Vault and prepare aligned lists
+    vault_data = check_vault_and_prepare_api_keys(updated_accounts)
+
+    # Phase 4: Parallel deployment with expand on two aligned lists
+    deployment_results = get_workspace_and_update_account.expand(
+        account_info=vault_data["accounts_list"],
+        schematics_api_key=vault_data["schematics_api_keys_list"],
     )
-    
-    # Phase 6: Aggregate results
+
+    # Phase 5: Aggregate results
     final_results = aggregate_deployment_results(deployment_results)
 
 dag_parallel_update()
