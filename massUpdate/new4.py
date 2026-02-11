@@ -240,6 +240,26 @@ def dag_parallel_update() -> None:
         }
 
     # =========================
+    # STEP 3.1 - EXTRACT ACCOUNTS LIST
+    # =========================
+    @step
+    def extract_accounts_list(vault_data: dict) -> list[dict]:
+        """Extract accounts list from vault data"""
+        accounts = vault_data["accounts_list"]
+        logger.info(f"Extracted {len(accounts)} accounts for deployment")
+        return accounts
+
+    # =========================
+    # STEP 3.2 - EXTRACT API KEYS LIST
+    # =========================
+    @step(hide_output=True)
+    def extract_api_keys_list(vault_data: dict) -> list[str]:
+        """Extract API keys list from vault data"""
+        api_keys = vault_data["schematics_api_keys_list"]
+        logger.info(f"Extracted {len(api_keys)} API keys for deployment")
+        return api_keys
+
+    # =========================
     # STEP 4 - WORKSPACE + PLAN/APPLY (PARALLEL)
     # =========================
     @step(
@@ -454,10 +474,14 @@ def dag_parallel_update() -> None:
     # Phase 3: Check Vault and prepare aligned lists
     vault_data = check_vault_and_prepare_api_keys(updated_accounts)
 
+    # Phase 3.1 & 3.2: Extract lists from dict (required for expand)
+    accounts_list = extract_accounts_list(vault_data)
+    api_keys_list = extract_api_keys_list(vault_data)
+
     # Phase 4: Parallel deployment with expand on two aligned lists
     deployment_results = get_workspace_and_update_account.expand(
-        account_info=vault_data["accounts_list"],
-        schematics_api_key=vault_data["schematics_api_keys_list"],
+        account_info=accounts_list,
+        schematics_api_key=api_keys_list,
     )
 
     # Phase 5: Aggregate results
