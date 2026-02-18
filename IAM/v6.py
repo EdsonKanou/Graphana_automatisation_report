@@ -238,26 +238,36 @@ class UnifiedExtractIamPayload(ProductActionPayload):
     
     def has_filter_constraints(self) -> bool:
         """Vérifie si des filtres sont appliqués (mode BY_FILTERS ou BY_NAMES_WITH_FILTERS)."""
-        return (
-            self.accounts_orchestrator is not None 
-            or self.accounts_environment is not None
-        )
+        return self.has_filters()
+    
+    def should_apply_filters(self) -> bool:
+        """Vérifie si on doit appliquer des filtres (tous les modes sauf BY_NAMES pur)."""
+        return self.has_filters()
 
     def get_account_names(self) -> List[str]:
         """
-        Retourne la liste des noms de comptes (mode BY_NAMES).
+        Retourne la liste des noms de comptes.
         
         Returns:
             List[str]: Liste des noms de comptes
         
         Raises:
-            ValueError: Si appelé en mode BY_FILTERS
+            ValueError: Si aucun account_names fourni
         """
-        if not self.is_by_names_mode():
-            raise ValueError(
-                "get_account_names() can only be called in BY_NAMES mode"
-            )
+        if not self.account_names:
+            raise ValueError("No account_names provided in payload")
         return self.account_names
+    
+    def has_account_names(self) -> bool:
+        """Vérifie si des noms de comptes sont fournis."""
+        return self.account_names is not None and len(self.account_names) > 0
+    
+    def has_filters(self) -> bool:
+        """Vérifie si des filtres sont fournis."""
+        return (
+            self.accounts_orchestrator is not None 
+            or self.accounts_environment is not None
+        )
 
     def get_orchestrator_filter_values(self) -> List[str]:
         """

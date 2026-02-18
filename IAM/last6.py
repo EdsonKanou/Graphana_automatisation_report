@@ -100,67 +100,38 @@ def dag_extract_iam_create() -> None:
         payload: UnifiedExtractIamPayload = depends(payload_dependency),
     ) -> Dict[str, Any]:
         """
-        Détecte automatiquement le mode d'extraction.
+        Détecte le mode d'extraction et prépare les infos.
         
         Returns:
-            dict: Informations sur le mode détecté
+            dict: Informations basiques sur le payload
         """
         logger.info("=" * 80)
         logger.info("🚀 DAG Extract IAM - Starting")
         logger.info("=" * 80)
         
         mode = payload.get_extraction_mode()
+        has_names = payload.has_account_names()
+        has_filters = payload.has_filters()
         
-        mode_info = {
-            "mode": mode.value,
-        }
+        logger.info(f"🔍 Extraction mode: {mode.value.upper()}")
         
-        if mode == ExtractionMode.BY_NAMES:
-            account_names = payload.get_account_names()
-            mode_info.update({
-                "account_names": account_names,
-                "count": len(account_names)
-            })
-            
-            logger.info(f"🔍 Mode: BY_NAMES (no filters)")
-            logger.info(f"   Requested accounts: {len(account_names)}")
-            for idx, name in enumerate(account_names, 1):
-                logger.info(f"     [{idx}] {name}")
+        mode_info = {"mode": mode.value}
         
-        elif mode == ExtractionMode.BY_NAMES_WITH_FILTERS:
-            account_names = payload.get_account_names()
-            mode_info.update({
-                "account_names": account_names,
-                "count": len(account_names),
-                "orchestrator": payload.accounts_orchestrator,
-                "environment": payload.accounts_environment,
-            })
-            
-            logger.info(f"🔍 Mode: BY_NAMES_WITH_FILTERS")
-            logger.info(f"   Requested accounts: {len(account_names)}")
-            for idx, name in enumerate(account_names, 1):
-                logger.info(f"     [{idx}] {name}")
-            logger.info(f"   Filters to validate:")
-            logger.info(f"     - Orchestrator: {payload.accounts_orchestrator}")
-            logger.info(f"     - Environment: {payload.accounts_environment}")
-            logger.warning(f"   ⚠ Only accounts matching filters will be processed")
+        if has_names:
+            account_names = payload.account_names
+            logger.info(f"   Account names: {len(account_names)}")
+            mode_info["account_names"] = account_names
         
-        else:  # BY_FILTERS
-            mode_info.update({
-                "orchestrator": payload.accounts_orchestrator,
-                "environment": payload.accounts_environment,
-            })
-            
-            logger.info(f"🔍 Mode: BY_FILTERS")
-            logger.info(f"   Orchestrator: {payload.accounts_orchestrator}")
-            logger.info(f"   Environment: {payload.accounts_environment}")
-            logger.info(f"   Scope: {payload._get_extraction_scope()}")
-            
-            if payload.is_full_extraction():
-                logger.warning("⚠ Full extraction mode (ALL + ALL)")
+        if has_filters:
+            logger.info(f"   Filters:")
+            if payload.accounts_orchestrator:
+                logger.info(f"     - Orchestrator: {payload.accounts_orchestrator}")
+                mode_info["orchestrator"] = payload.accounts_orchestrator
+            if payload.accounts_environment:
+                logger.info(f"     - Environment: {payload.accounts_environment}")
+                mode_info["environment"] = payload.accounts_environment
         
         logger.info("=" * 80)
-        
         return mode_info
     
     # ========================================================================
@@ -174,141 +145,78 @@ def dag_extract_iam_create() -> None:
         db_session: SASession = depends(sqlalchemy_session_dependency),
     ) -> List[Dict[str, Any]]:
         """
-        Récupère les comptes AWS selon le mode détecté.
+        Récupère les comptes AWS selon le payload.
         
-        Modes supportés:
-        - BY_NAMES : filtre par account_name uniquement
-        - BY_FILTERS : filtre par account_type et account_env
-        - BY_NAMES_WITH_FILTERS : filtre par account_name puis valide avec les filtres
+        Logique simple:
+        1. Si account_names fourni → filtre par noms
+        2. Si filtres fournis → applique les filtres EN PLUS
+        3. Sinon → récupère par filtres uniquement
         
         Returns:
             List[Dict]: Liste des comptes avec leurs métadonnées
-        
-        Raises:
-            ValueError: Si aucun compte trouvé
         """
         logger.info("=" * 80)
         logger.info("📋 Step 1: Retrieving accounts from database")
         logger.info("=" * 80)
         
-        mode = ExtractionMode(mode_info["mode"])
+        has_names = payload.has_account_names()
+        has_filters = payload.has_filters()
+        
+        logger.info(f"Query parameters:")
+        logger.info(f"   - Has account names: {has_names}")
+        logger.info(f"   - Has filters: {has_filters}")
         
         try:
             query = db_session.query(AccountExtractIAM)
             
-            # Logique selon le mode
-            if mode == ExtractionMode.BY_NAMES:
-                # Mode BY_NAMES : uniquement les noms, pas de filtres
-                account_names = mode_info["account_names"]
-                logger.info(f"Mode: BY_NAMES (no filters)")
-                logger.info(f"Filtering by account names (count: {len(account_names)})")
-                
-                query = query.filter(
-                    AccountExtractIAM.account_name.in_(account_names)
-                )
+            # ÉTAPE 1 : Filtre par noms si fournis
+            if has_names:
+                account_names = payload.get_account_names()
+                logger.info(f"Filtering by {len(account_names)} account name(s)")
+                query = query.filter(AccountExtractIAM.account_name.in_(account_names))
             
-            elif mode == ExtractionMode.BY_NAMES_WITH_FILTERS:
-                # Mode BY_NAMES_WITH_FILTERS : noms + validation par filtres
-                account_names = mode_info["account_names"]
-                
-                logger.info(f"Mode: BY_NAMES_WITH_FILTERS")
-                logger.info(f"Input: {len(account_names)} account name(s)")
-                logger.info(f"Filters to apply:")
-                
+            # ÉTAPE 2 : Applique les filtres si fournis
+            if has_filters:
                 orchestrator_values = payload.get_orchestrator_filter_values()
                 environment_values = payload.get_environment_filter_values()
                 
+                logger.info(f"Applying filters:")
                 logger.info(f"   - account_type IN {orchestrator_values}")
                 logger.info(f"   - account_env IN {environment_values}")
                 
-                # Query : noms + filtres
-                query = query.filter(
-                    AccountExtractIAM.account_name.in_(account_names)
-                )
-                query = query.filter(
-                    AccountExtractIAM.account_type.in_(orchestrator_values)
-                )
-                query = query.filter(
-                    AccountExtractIAM.account_env.in_(environment_values)
-                )
+                query = query.filter(AccountExtractIAM.account_type.in_(orchestrator_values))
+                query = query.filter(AccountExtractIAM.account_env.in_(environment_values))
             
-            else:  # BY_FILTERS
-                # Mode BY_FILTERS : uniquement les filtres
-                orchestrator_values = payload.get_orchestrator_filter_values()
-                environment_values = payload.get_environment_filter_values()
-                
-                logger.info(f"Mode: BY_FILTERS")
-                logger.info(f"Filtering by:")
-                logger.info(f"   - account_type IN {orchestrator_values}")
-                logger.info(f"   - account_env IN {environment_values}")
-                
-                query = query.filter(
-                    AccountExtractIAM.account_type.in_(orchestrator_values)
-                )
-                query = query.filter(
-                    AccountExtractIAM.account_env.in_(environment_values)
-                )
-            
-            # Exécution de la query
+            # ÉTAPE 3 : Exécution
             logger.debug(f"SQL Query: {query}")
             account_list_orm = query.all()
             
-            # Vérification
+            # ÉTAPE 4 : Vérification
             if not account_list_orm:
-                if mode == ExtractionMode.BY_NAMES:
-                    error_msg = f"No accounts found with names: {mode_info['account_names']}"
-                elif mode == ExtractionMode.BY_NAMES_WITH_FILTERS:
-                    error_msg = (
-                        f"No accounts found matching names AND filters. "
-                        f"Input names: {mode_info['account_names']}, "
-                        f"Filters: orchestrator={payload.accounts_orchestrator}, "
-                        f"environment={payload.accounts_environment}"
-                    )
-                else:
-                    error_msg = (
-                        f"No accounts found matching filters: "
-                        f"orchestrator={mode_info['orchestrator']}, "
-                        f"environment={mode_info['environment']}"
-                    )
+                error_msg = f"No accounts found matching criteria"
                 logger.error(error_msg)
                 raise ValueError(error_msg)
             
-            logger.info(f"✓ Found {len(account_list_orm)} account(s) in database")
+            logger.info(f"✓ Found {len(account_list_orm)} account(s)")
             
-            # Vérification des comptes exclus (mode BY_NAMES_WITH_FILTERS uniquement)
-            if mode == ExtractionMode.BY_NAMES_WITH_FILTERS:
-                requested_names = set(mode_info["account_names"])
+            # ÉTAPE 5 : Warnings si applicable
+            if has_names:
+                input_names = set(payload.get_account_names())
                 found_names = {acc.account_name for acc in account_list_orm}
-                excluded_names = requested_names - found_names
+                excluded_names = input_names - found_names
                 
                 if excluded_names:
-                    logger.warning("=" * 80)
-                    logger.warning(f"⚠ FILTER VALIDATION: {len(excluded_names)} account(s) EXCLUDED")
-                    logger.warning(f"   Reason: Do not match filter criteria")
-                    logger.warning(f"   Filters: orchestrator={payload.accounts_orchestrator}, environment={payload.accounts_environment}")
-                    logger.warning(f"   Excluded accounts:")
-                    for name in sorted(excluded_names):
-                        logger.warning(f"     - {name}")
-                    logger.warning(f"   Input: {len(requested_names)} account(s)")
-                    logger.warning(f"   Valid: {len(found_names)} account(s)")
-                    logger.warning(f"   Excluded: {len(excluded_names)} account(s)")
-                    logger.warning("=" * 80)
+                    if has_filters:
+                        logger.warning(f"⚠ {len(excluded_names)} account(s) excluded (don't match filters or not in DB):")
+                    else:
+                        logger.warning(f"⚠ {len(excluded_names)} account(s) not found in database:")
                     
-                    logger.info(f"Proceeding with {len(found_names)} account(s) that match filters")
-            
-            # Vérification des comptes manquants en DB (mode BY_NAMES uniquement)
-            elif mode == ExtractionMode.BY_NAMES:
-                found_names = {acc.account_name for acc in account_list_orm}
-                missing_names = set(mode_info["account_names"]) - found_names
-                
-                if missing_names:
-                    logger.warning(
-                        f"⚠ WARNING: {len(missing_names)} account(s) not found in database:"
-                    )
-                    for name in sorted(missing_names):
+                    for name in sorted(excluded_names):
                         logger.warning(f"   - {name}")
+                    
+                    logger.info(f"Summary: Input={len(input_names)}, Found={len(found_names)}, Excluded={len(excluded_names)}")
             
-            # Conversion en dict pour faciliter l'expand
+            # ÉTAPE 6 : Conversion en dict
             account_list = []
             for account in account_list_orm:
                 account_list.append({
@@ -319,19 +227,17 @@ def dag_extract_iam_create() -> None:
                     "account_env": account.account_env,
                 })
             
-            # Breakdown (mode BY_FILTERS ou BY_NAMES_WITH_FILTERS)
-            if mode in [ExtractionMode.BY_FILTERS, ExtractionMode.BY_NAMES_WITH_FILTERS]:
+            # ÉTAPE 7 : Breakdown si filtres appliqués
+            if has_filters:
                 orch_counts = {}
                 env_counts = {}
                 for acc in account_list:
                     orch_counts[acc["account_type"]] = orch_counts.get(acc["account_type"], 0) + 1
                     env_counts[acc["account_env"]] = env_counts.get(acc["account_env"], 0) + 1
                 
-                logger.info(f"Breakdown by orchestrator: {orch_counts}")
-                logger.info(f"Breakdown by environment: {env_counts}")
+                logger.info(f"Breakdown: orchestrator={orch_counts}, environment={env_counts}")
             
             logger.info("=" * 80)
-            
             return account_list
         
         except Exception as e:
@@ -527,11 +433,11 @@ def dag_extract_iam_create() -> None:
             logger.error(error_msg)
             raise ValueError(error_msg)
         
-        # Breakdown par type/env (mode BY_FILTERS ou BY_NAMES_WITH_FILTERS)
-        mode = ExtractionMode(mode_info["mode"])
+        # Breakdown par type/env si des filtres ont été appliqués
+        payload_has_filters = mode_info.get("orchestrator") or mode_info.get("environment")
         breakdown = {}
         
-        if mode in [ExtractionMode.BY_FILTERS, ExtractionMode.BY_NAMES_WITH_FILTERS]:
+        if payload_has_filters:
             orch_counts = {}
             env_counts = {}
             
@@ -546,8 +452,8 @@ def dag_extract_iam_create() -> None:
                 "environment": env_counts
             }
             
-            logger.info(f"   Successful by orchestrator: {orch_counts}")
-            logger.info(f"   Successful by environment: {env_counts}")
+            logger.info(f"   By orchestrator: {orch_counts}")
+            logger.info(f"   By environment: {env_counts}")
         
         # Compression du répertoire
         logger.info(f"Compressing directory: {directory_path}")
