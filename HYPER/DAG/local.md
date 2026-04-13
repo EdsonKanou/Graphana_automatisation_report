@@ -567,3 +567,187 @@ docker exec -i mon_projet_postgres psql -U dev_user -d mon_projet_local \
 8. **Lance** tes DAGs avec des payloads de test
 
 Si tu bloques à une étape précise, partage l'erreur et on la résoudra ensemble !
+
+
+
+
+
+
+################# SUITE ##############################
+
+
+
+Bonne nouvelle : **tu n'as pas besoin du script d'initialisation SQL** ! Tu as déjà tout ce qu'il faut avec tes CSV et ton `sql-command.sql`. On va juste adapter l'approche.
+
+---
+
+## Ce que tu as déjà et comment l'exploiter
+
+```
+pgdump/
+├── sql-command.sql          ← commandes COPY (charge les CSV)
+├── env_specific_data.csv
+├── mgt_cluster.csv
+├── ocp_version.csv
+├── oidc.csv
+├── svm.csv
+└── cluster.csv
+```
+
+Le problème actuel : ton `sql-command.sql` utilise des chemins **internes à un serveur** (`/var/lib/postgresql/...`). On va adapter ça pour Docker.
+
+---
+
+## Le plan en 3 étapes
+
+### ÉTAPE 1 — Comprendre pourquoi les CSV suffisent
+
+Tes fichiers CSV **contiennent déjà** la structure implicite (les colonnes sont dans l'en-tête). La commande `COPY` de PostgreSQL peut créer les données **mais pas les tables**. Donc tu as deux options :
+
+**Option A** — SQLAlchemy crée les tables automatiquement via tes modèles (le plus propre si tu as des modèles définis)
+
+**Option B** — PostgreSQL crée les tables lui-même via un dump complet
+
+Dis-moi : est-ce que dans ton projet tu as des fichiers avec des classes Python comme ça ?
+
+```python
+class MgtCluster(Base):
+    __tablename__ = "mgt_cluster"
+    id = Column(Integer, primary_key=True)
+    name = Column(String)
+    ...
+```
+
+Si oui → **Option A**, SQLAlchemy s'en charge.
+Si non → **Option B**, on fait autrement.
+
+---
+
+### ÉTAPE 2 — Adapter ton `sql-command.sql` pour Docker
+
+Le seul changement à faire : les chemins des CSV. Dans Docker, on va monter tes CSV dans `/docker-entrypoint-initdb.d/csv/`, donc les chemins changent.
+
+Crée un nouveau fichier `local_dev/init_db/02_load_data.sql` (copie de ton sql-command.sql avec les chemins corrigés) :
+
+```sql
+-- local_dev/init_db/02_load_data.sql
+
+COPY env_specific_data("created_at", "created_by", "deleted_at", "deleted_by", 
+    "updated_at", "updated_by", "id", "name", "quay_url_1", "quay_url_2", 
+    "quay_url_3", "active")
+FROM '/docker-entrypoint-initdb.d/csv/env_specific_data.csv'  -- ← chemin Docker
+DELIMITER ','
+CSV HEADER;
+
+COPY mgt_cluster("created_at", "created_by", "deleted_at", "deleted_by", 
+    "updated_at", "updated_by", "id", "name", "api_url", "provisionning", 
+    "active", "discovery_url", "env_specific_data__id")
+FROM '/docker-entrypoint-initdb.d/csv/mgt_cluster.csv'
+DELIMITER ','
+CSV HEADER;
+
+COPY ocp_version("created_at", "created_by", "deleted_at", "deleted_by", 
+    "updated_at", "updated_by", "id", "name", "version", "release_date", 
+    "eoss_date", "eoes_date", "eol_date", "active", "url")
+FROM '/docker-entrypoint-initdb.d/csv/ocp_version.csv'
+DELIMITER ','
+CSV HEADER;
+
+COPY oidc("created_at", "created_by", "deleted_at", "deleted_by", 
+    "updated_at", "updated_by", "id", "sub_id", "name", "client_id", 
+    "client_secret", "issuer", "active")
+FROM '/docker-entrypoint-initdb.d/csv/oidc.csv'
+DELIMITER ','
+CSV HEADER;
+
+COPY svm("created_at", "created_by", "deleted_at", "deleted_by", 
+    "updated_at", "updated_by", "id", "sub_id", "name", "svm_name", 
+    "address_mgt", "address_data", "username", "password", 
+    "prefix", "quota", "active")
+FROM '/docker-entrypoint-initdb.d/csv/svm.csv'
+DELIMITER ','
+CSV HEADER;
+
+COPY cluster("created_at", "created_by", "deleted_at", "deleted_by", 
+    "updated_at", "updated_by", "sub_id", "name", "apcode", "realm", 
+    "environment_type", "code_bu", "pod_cidr", "pod_prefix", 
+    "svc_cidr", "mandatory_upgrade", "active", "oidc__id", 
+    "mgt_cluster__id", "ocp_version__id", "svm__id")
+FROM '/docker-entrypoint-initdb.d/csv/cluster.csv'
+DELIMITER ','
+CSV HEADER;
+```
+
+---
+
+### ÉTAPE 3 — Adapter le `docker-compose.yml` pour monter tes CSV
+
+```yaml
+services:
+  postgres:
+    image: postgres:15
+    container_name: mon_projet_postgres
+    environment:
+      POSTGRES_USER: dev_user
+      POSTGRES_PASSWORD: dev_password
+      POSTGRES_DB: mon_projet_local
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      # Montage du dossier init (scripts SQL exécutés au 1er démarrage)
+      - ./init_db:/docker-entrypoint-initdb.d
+      # Montage de tes CSV dans un sous-dossier accessible
+      - ../pgdump:/docker-entrypoint-initdb.d/csv   # ← tes CSV sont ici
+
+volumes:
+  postgres_data:
+```
+
+---
+
+## Mais les tables doivent exister avant le COPY !
+
+C'est le point clé. Le `COPY` charge des données, mais les tables doivent déjà exister. Voici la solution la plus simple selon ta situation :
+
+### Si tu as les modèles SQLAlchemy → script Python
+
+```python
+# local_dev/create_tables.py
+import sys
+sys.path.insert(0, '..')   # pour accéder à ton projet
+
+from database.session import engine
+from tes_modeles import Base   # adapte l'import
+
+print("Création des tables...")
+Base.metadata.create_all(engine)
+print("Tables créées !")
+```
+
+```bash
+cd local_dev
+poetry run python create_tables.py
+# puis charge les CSV
+docker exec -i mon_projet_postgres psql -U dev_user -d mon_projet_local \
+  < init_db/02_load_data.sql
+```
+
+### Si tu n'as pas les modèles → demande un dump de structure à ton DBA
+
+```bash
+# Commande que le DBA lance côté prod (sans données, juste la structure)
+pg_dump --schema-only --no-owner --no-acl nom_db_prod > local_dev/init_db/01_schema.sql
+```
+
+Ce fichier `01_schema.sql` sera exécuté automatiquement par Docker avant ton `02_load_data.sql` (ils sont exécutés dans l'ordre alphabétique/numérique).
+
+---
+
+## Pour savoir quelle option te convient
+
+Partage-moi juste :
+1. Est-ce que tu as des fichiers Python avec des classes `Base` / `Column` / `__tablename__` dans ton projet ?
+2. As-tu accès à quelqu'un qui peut faire un `pg_dump --schema-only` sur la prod ?
+
+Avec ça je te donne la procédure exacte adaptée à ta situation.
