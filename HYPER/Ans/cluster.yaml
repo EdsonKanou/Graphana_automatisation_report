@@ -1,0 +1,162 @@
+---
+- hosts: localhost
+  gather_facts: no
+  connection: local
+
+  vars:
+    hashivault_url: "{{ lookup('env', 'VAULT_URL') }}"
+    hashivault_cert: "{{ lookup('env', 'CLIENT_CERT') | b64decode }}"
+    hashivault_key: "{{ lookup('env', 'CLIENT_KEY') | b64decode }}"
+    hashivault_secret_path: "{{ lookup('env', 'SECRET_PATH') }}"
+    orchestrator_environment: "{{ lookup('env', 'ENVIRONMENT') }}"
+
+    hashivault_gitlab_auth_secret_path: "orchestrator/{{ orchestrator_environment }}/products/hypershift/git_argo"
+    hashivault_namespace: "BP21/BP21/EC001B003417"
+
+    ansible_argo_git_dest_repo_url: "https://gitlab-dogen.group.echonet/market-place/ap27496/argo/bootstrap-clusters.git"
+    ansible_argo_git_dest_repo_branch: "management-cluster"
+
+    ansible_argo_values_git_dest_repo_url: "https://gitlab-dogen.group.echonet/market-place/ap27496/argo/bootstrap-clusters-values.git"
+    ansible_argo_values_git_dest_repo_branch: "management-cluster"
+
+    ansible_argo_clone_dest: "/tmp/argo"
+    ansible_argo_values_clone_dest: "/tmp/argovalues"
+
+  tasks:
+
+    # Prepare Vault certs
+    - name: Write public cert
+      ansible.builtin.copy:
+        content: "{{ hashivault_cert }}"
+        dest: "/tmp/cs31.crt"
+
+    - name: Write private key
+      ansible.builtin.copy:
+        content: "{{ hashivault_key }}"
+        dest: "/tmp/cs31.key"
+
+    # Get GitLab credentials
+    - name: Gather GitLab credentials
+      community.hashi_vault.vault_kv2_get:
+        namespace: "{{ hashivault_namespace }}"
+        path: "{{ hashivault_gitlab_auth_secret_path }}"
+        url: "{{ hashivault_url }}"
+        cert_auth_public_key: "/tmp/cs31.crt"
+        cert_auth_private_key: "/tmp/cs31.key"
+        ca_cert: "/etc/pki/ca-trust/source/anchors/bundle-ca.crt"
+        auth_method: cert
+      register: SECRET_GIT
+
+    # Build authenticated repo URL
+    - name: Rework git URI for auth
+      ansible.builtin.set_fact:
+        git_argo_auth_uri: >-
+          {{ ansible_argo_git_dest_repo_url
+          | replace('https://',
+          'https://' + SECRET_GIT.secret.username + ':' + SECRET_GIT.secret.token + '@') }}
+      no_log: true
+
+    # Clone repo
+    - name: Pull argocd destination repo
+      ansible.builtin.git:
+        repo: "{{ git_argo_auth_uri }}"
+        dest: "{{ ansible_argo_clone_dest }}"
+        version: "{{ ansible_argo_git_dest_repo_branch }}"
+
+    # Load values.yaml
+    - name: Load values file
+      ansible.builtin.include_vars:
+        file: "{{ ansible_argo_clone_dest }}/values.yaml"
+      register: VALUESFILE
+
+    - name: Debug clusters
+      debug:
+        msg: "{{ clusters }}"
+
+    # Check if cluster exists
+    - name: Check if cluster already exists
+      ansible.builtin.set_fact:
+        cluster_exists: true
+      loop: "{{ clusters }}"
+      when: item.clusterName == cluster_name
+      ignore_errors: true
+
+    # Add cluster
+    - name: Add payload cluster
+      ansible.builtin.set_fact:
+        clusters: >-
+          {{ clusters + [{
+            'clusterName': cluster_name,
+            'components': [{
+              'name': 'install-hosted-cluster',
+              'tag': '1.1-4.18'
+            }]
+          }] }}
+
+    - name: Debug clusters updated
+      debug:
+        msg: "{{ clusters }}"
+
+    # Write back values.yaml
+    - name: Write values file
+      ansible.builtin.copy:
+        content: "{{ clusters | to_nice_yaml }}"
+        dest: "{{ ansible_argo_clone_dest }}/values.yaml"
+
+    # Git commit & push
+    - name: Commit and push changes
+      shell: |
+        cd {{ ansible_argo_clone_dest }} && \
+        git config --global user.email "cs31-automation@bnpparibas.com" && \
+        git config --global user.name "CS31 Automation" && \
+        git add . && \
+        git commit -m "orchestration: demand id: {{ demand_id }} from {{ requestor }} for sub: {{ subscription_id }}" && \
+        git push origin {{ ansible_argo_git_dest_repo_branch }}
+
+    ##################################################
+    # SECOND REPO (values repo)
+    ##################################################
+
+    - name: Rework values repo URI
+      ansible.builtin.set_fact:
+        ansible_argo_values_git_dest_repo_auth_url: >-
+          {{ ansible_argo_values_git_dest_repo_url
+          | replace('https://',
+          'https://' + SECRET_GIT.secret.username + ':' + SECRET_GIT.secret.token + '@') }}
+      no_log: true
+
+    - name: Clone values repo
+      ansible.builtin.git:
+        repo: "{{ ansible_argo_values_git_dest_repo_auth_url }}"
+        dest: "{{ ansible_argo_values_clone_dest }}"
+        version: "{{ ansible_argo_values_git_dest_repo_branch }}"
+
+    - name: Ensure cluster directory exists
+      ansible.builtin.file:
+        path: "{{ ansible_argo_values_clone_dest }}/{{ cluster_name }}"
+        state: directory
+
+    - name: Ensure install-hosted-cluster directory exists
+      ansible.builtin.file:
+        path: "{{ ansible_argo_values_clone_dest }}/{{ cluster_name }}/install-hosted-cluster"
+        state: directory
+
+    - name: Extract numeric ID
+      ansible.builtin.set_fact:
+        numeric_id: "{{ cluster_name[-4:] }}"
+
+    - name: Generate API port
+      ansible.builtin.set_fact:
+        cluster_api_port: "{{ (numeric_id | int) + 30000 }}"
+
+    - name: Template values file
+      ansible.builtin.template:
+        src: "values-install-hosted-cluster.yaml.j2"
+        dest: "{{ ansible_argo_values_clone_dest }}/{{ cluster_name }}/install-hosted-cluster/values-install-hosted-cluster-{{ cluster_name }}.yaml"
+
+    - name: Commit and push values repo
+      shell: |
+        cd {{ ansible_argo_values_clone_dest }} && \
+        git add . && \
+        git commit -m "orchestration: demand id: {{ demand_id }} from {{ requestor }} for sub: {{ subscription_id }}" && \
+        git push origin {{ ansible_argo_values_git_dest_repo_branch }}
